@@ -478,6 +478,7 @@ static CGPoint to_game(CGPoint p);
 - (void)loadStatus:(int)stage text:(NSString*)text value:(int)value;
 - (void)hideLoading;
 - (void)showToast:(NSString*)text;
+- (void)demo:(int)step;
 @end
 
 static CGPoint to_game(CGPoint p) {
@@ -538,10 +539,25 @@ static NSString* tr(NSString* ru, NSString* en) { return is_ru() ? ru : en; }
   [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 
   [self setupControllers];
-  if ([NSUserDefaults.standardUserDefaults boolForKey:@"padDemo"])
-    for (int i = 0; i < 8; i++)
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((16 + i * 4) * NSEC_PER_SEC)), dispatch_get_main_queue(),
-                     ^{ [ws.pad demoStep:i]; });
+  if ([NSUserDefaults.standardUserDefaults boolForKey:@"padDemo"]) [self demo:0];
+}
+
+- (void)demo:(int)step {
+  if (step > 8) return;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    double t = host_now_ms();
+    if (step < 8) [self.pad demoStep:step];
+    host_log("demo %d: %.0f ms", step, host_now_ms() - t);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      UIGraphicsImageRenderer* r = [[UIGraphicsImageRenderer alloc] initWithSize:self.view.bounds.size];
+      UIImage* img = [r imageWithActions:^(UIGraphicsImageRendererContext* c) {
+        [self.view drawViewHierarchyInRect:self.view.bounds afterScreenUpdates:YES];
+      }];
+      NSString* f = [docs_dir() stringByAppendingPathComponent:[NSString stringWithFormat:@"demo-%d.png", step]];
+      [UIImagePNGRepresentation(img) writeToFile:f atomically:YES];
+      [self demo:step + 1];
+    });
+  });
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1018,6 +1034,7 @@ _Noreturn void plat_engine_finished(void) {
   if (g_running || !g_ctx) return;
   NSString* game = find_game();
   if (!game) {
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"padDemo"]) return;
     if (!g_missing.superview) {
       host_log("no game — waiting for files in Documents/game");
       __weak WAppDelegate* ws = self;
