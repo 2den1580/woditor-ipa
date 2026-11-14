@@ -70,6 +70,7 @@ static NSString* cfgString(NSDictionary* c, NSString* k) {
 
     self.root.backgroundColor = PadColor(0x99555555);
     self.root.blockAll = YES;
+    [self.root bringSubviewToFront:self.buttons];
     UILabel* h = PadLabel(PadStr(@"pad_edit_hint"), 16, 0xFFCCCCCC, NO);
     h.textAlignment = NSTextAlignmentCenter;
     h.backgroundColor = PadColor(0xB0000000);
@@ -99,6 +100,7 @@ static NSString* cfgString(NSDictionary* c, NSString* k) {
   } else {
     self.root.backgroundColor = UIColor.clearColor;
     self.root.blockAll = NO;
+    [self.root sendSubviewToBack:self.buttons];
     [self removePanel];
     [self dismissEditorMenu];
     [s.hint removeFromSuperview];
