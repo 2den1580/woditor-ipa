@@ -1,0 +1,142 @@
+name: iOS IPA
+on:
+  workflow_dispatch:
+    inputs:
+      game:
+        description: "Game: zip name from the games release (e.g. MyGame.zip) or a direct zip URL. Empty = no game"
+        required: false
+        default: ""
+      app_name:
+        description: "App name on the home screen"
+        required: false
+        default: "Woditor"
+      bundle_id:
+        description: "Bundle ID (use different ones to install several games side by side)"
+        required: false
+        default: "den1580.woditor"
+      simulator:
+        description: "Test run on the iPhone simulator (log and screenshots, about +5 minutes)"
+        type: boolean
+        required: false
+        default: false
+permissions:
+  contents: read
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GAME: ${{ inputs.game }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Game
+        if: inputs.game != ''
+        run: |
+          mkdir -p dl unz
+          case "$GAME" in
+            http://*|https://*) curl -fL --retry 3 -o dl/game.zip "$GAME" ;;
+            *) gh release download games -R "$GITHUB_REPOSITORY" -p "$GAME" -D dl && mv "dl/$GAME" dl/game.zip ;;
+          esac
+          ls -la dl
+          unzip -q dl/game.zip -d unz
+          DIR="$(find unz \( -name Data.wolf -o -name Game.ini -o -name Data -type d \) -print | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2- | xargs -I{} dirname "{}")"
+          test -n "$DIR" || { echo "no Data.wolf / Data / Game.ini in the archive"; exit 1; }
+          echo "game: $DIR"
+          mkdir -p ios/game
+          cp -R "$DIR"/. ios/game/
+          du -sh ios/game
+          rm -rf dl unz
+      - name: Xcode project
+        run: |
+          cmake -S ios -B build -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+                -DCMAKE_OSX_ARCHITECTURES=arm64 -DWODITOR_BUILD=${{ github.run_number }} \
+                -DWODITOR_APP_NAME="${{ inputs.app_name }}" -DWODITOR_BUNDLE_ID="${{ inputs.bundle_id }}"
+      - name: Build
+        run: |
+          rc=0
+          xcodebuild -project build/Woditor.xcodeproj -scheme Woditor -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build/xcodebuild.log 2>&1 || rc=$?
+          grep -E "error:|BUILD SUCCEEDED|BUILD FAILED" build/xcodebuild.log | head -100 || true
+          exit $rc
+      - name: IPA
+        run: |
+          APP="$(find build -type d -name 'Woditor.app' -path '*iphoneos*' | head -1)"
+          NAME="$(echo "${{ inputs.app_name }}" | tr -c 'A-Za-z0-9_.-' '_' | sed 's/_*$//')"
+          mkdir -p out/Payload && cp -R "$APP" out/Payload/
+          (cd out && zip -qry "${NAME:-Woditor}-${{ github.run_number }}.ipa" Payload && rm -rf Payload)
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa-${{ github.run_number }}
+          path: out/*.ipa
+          retention-days: 3
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log-${{ github.run_number }}
+          path: build/xcodebuild.log
+          retention-days: 3
+
+  simulator:
+    if: inputs.simulator
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GAME: ${{ inputs.game }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Game
+        if: inputs.game != ''
+        run: |
+          mkdir -p dl unz
+          case "$GAME" in
+            http://*|https://*) curl -fL --retry 3 -o dl/game.zip "$GAME" ;;
+            *) gh release download games -R "$GITHUB_REPOSITORY" -p "$GAME" -D dl && mv "dl/$GAME" dl/game.zip ;;
+          esac
+          unzip -q dl/game.zip -d unz
+          DIR="$(find unz \( -name Data.wolf -o -name Game.ini -o -name Data -type d \) -print | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2- | xargs -I{} dirname "{}")"
+          mkdir -p ios/game && cp -R "$DIR"/. ios/game/
+          rm -rf dl unz
+      - name: Build for simulator
+        run: |
+          cp ios/engine-prebuilt/libwoditor_engine_sim.a ios/engine-prebuilt/libwoditor_engine.a
+          cmake -S ios -B build -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64
+          rc=0
+          xcodebuild -project build/Woditor.xcodeproj -scheme Woditor -configuration Release -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build \
+            > build/xcodebuild-sim.log 2>&1 || rc=$?
+          grep -E "error:|BUILD SUCCEEDED|BUILD FAILED" build/xcodebuild-sim.log | head -60 || true
+          exit $rc
+      - name: Run
+        run: |
+          mkdir -p out
+          APP="$(find build -type d -name 'Woditor.app' -path '*iphonesimulator*' | head -1)"
+          DEV="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')"
+          xcrun simctl boot "$DEV"
+          xcrun simctl bootstatus "$DEV" -b > /dev/null
+          xcrun simctl install "$DEV" "$APP"
+          BID="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")"
+          DATA="$(xcrun simctl get_app_container "$DEV" "$BID" data)"
+          xcrun simctl launch "$DEV" "$BID" -padDemo YES
+          sleep 14
+          xcrun simctl io "$DEV" screenshot out/screen-00-start.png || true
+          for i in 0 1 2 3 4 5 6 7; do
+            sleep 4
+            xcrun simctl io "$DEV" screenshot "out/screen-0$((i+1))-demo$i.png" || true
+          done
+          if xcrun simctl spawn "$DEV" launchctl list | grep -q "$BID"; then echo "APP IS RUNNING"; else echo "APP HAS CLOSED"; fi | tee out/status.txt
+          cp "$DATA/Documents/woditor.log" out/ 2>/dev/null || echo "(no log)"
+          tail -60 out/woditor.log 2>/dev/null || true
+          find ~/Library/Logs/DiagnosticReports -name '*Woditor*' -exec cp {} out/ \; 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-${{ github.run_number }}
+          path: |
+            out/
+            build/xcodebuild-sim.log
+          retention-days: 3

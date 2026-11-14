@@ -1,0 +1,409 @@
+#ifndef WASM_RT_H_
+#define WASM_RT_H_
+
+#include <setjmp.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef __has_builtin
+#define __has_builtin(x) 0
+#endif
+
+#if __has_builtin(__builtin_expect)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define LIKELY(x) __builtin_expect(!!(x), 1)
+#else
+#define UNLIKELY(x) (x)
+#define LIKELY(x) (x)
+#endif
+
+#if __has_builtin(__builtin_memcpy)
+#define wasm_rt_memcpy __builtin_memcpy
+#else
+#define wasm_rt_memcpy memcpy
+#endif
+
+#if __has_builtin(__builtin_unreachable)
+#define wasm_rt_unreachable __builtin_unreachable
+#else
+#define wasm_rt_unreachable abort
+#endif
+
+#ifdef __STDC_VERSION__
+#if __STDC_VERSION__ >= 201112L
+#define WASM_RT_C11_AVAILABLE
+#endif
+#endif
+
+#ifdef WASM_RT_C11_AVAILABLE
+
+#if defined(_WIN32)
+#include <windows.h>
+#define WASM_RT_MUTEX CRITICAL_SECTION
+#define WASM_RT_USE_CRITICALSECTION 1
+#elif defined(__APPLE__) || defined(__STDC_NO_THREADS__)
+#include <pthread.h>
+#define WASM_RT_MUTEX pthread_mutex_t
+#define WASM_RT_USE_PTHREADS 1
+#else
+#include <threads.h>
+#define WASM_RT_MUTEX mtx_t
+#define WASM_RT_USE_C11THREADS 1
+#endif
+
+#endif
+
+#ifdef _MSC_VER
+#define WASM_RT_THREAD_LOCAL __declspec(thread)
+#elif defined(WASM_RT_C11_AVAILABLE)
+#define WASM_RT_THREAD_LOCAL _Thread_local
+#else
+#define WASM_RT_THREAD_LOCAL
+#endif
+
+#ifndef WASM_RT_SANITY_CHECKS
+#define WASM_RT_SANITY_CHECKS 0
+#endif
+
+#if defined(WASM_RT_MEMCHECK_SIGNAL_HANDLER)
+
+#if WASM_RT_MEMCHECK_SIGNAL_HANDLER
+#define WASM_RT_USE_MMAP 1
+#define WASM_RT_MEMCHECK_GUARD_PAGES 1
+#else
+#define WASM_RT_USE_MMAP 0
+#define WASM_RT_MEMCHECK_BOUNDS_CHECK 1
+#endif
+
+#warning \
+    "WASM_RT_MEMCHECK_SIGNAL_HANDLER has been deprecated in favor of WASM_RT_USE_MMAP and WASM_RT_MEMORY_CHECK_* macros"
+#endif
+
+#ifndef WASM_RT_USE_MMAP
+#if UINTPTR_MAX > 0xffffffff && !SUPPORT_MEMORY64
+#define WASM_RT_USE_MMAP 1
+#else
+#define WASM_RT_USE_MMAP 0
+#endif
+#endif
+
+#if UINTPTR_MAX > 0xffffffff && WASM_RT_USE_MMAP && !SUPPORT_MEMORY64 && \
+    !WABT_BIG_ENDIAN
+#define WASM_RT_GUARD_PAGES_SUPPORTED 1
+#else
+#define WASM_RT_GUARD_PAGES_SUPPORTED 0
+#endif
+
+#if !defined(WASM_RT_MEMCHECK_GUARD_PAGES) && \
+    !defined(WASM_RT_MEMCHECK_BOUNDS_CHECK)
+#if WASM_RT_GUARD_PAGES_SUPPORTED
+#define WASM_RT_MEMCHECK_GUARD_PAGES 1
+#else
+#define WASM_RT_MEMCHECK_BOUNDS_CHECK 1
+#endif
+#endif
+
+#ifndef WASM_RT_MEMCHECK_GUARD_PAGES
+#define WASM_RT_MEMCHECK_GUARD_PAGES 0
+#endif
+#ifndef WASM_RT_MEMCHECK_BOUNDS_CHECK
+#define WASM_RT_MEMCHECK_BOUNDS_CHECK 0
+#endif
+
+#if WASM_RT_MEMCHECK_GUARD_PAGES && !WASM_RT_GUARD_PAGES_SUPPORTED
+#error \
+    "WASM_RT_MEMCHECK_GUARD_PAGES not supported on this platform/configuration"
+#endif
+
+#if WASM_RT_MEMCHECK_GUARD_PAGES && WASM_RT_MEMCHECK_BOUNDS_CHECK
+#error \
+    "Cannot use both WASM_RT_MEMCHECK_GUARD_PAGES and WASM_RT_MEMCHECK_BOUNDS_CHECK"
+
+#elif !WASM_RT_MEMCHECK_GUARD_PAGES && !WASM_RT_MEMCHECK_BOUNDS_CHECK
+#error \
+    "Must choose at least one from WASM_RT_MEMCHECK_GUARD_PAGES and WASM_RT_MEMCHECK_BOUNDS_CHECK"
+#endif
+
+#ifndef WASM_RT_SKIP_SIGNAL_RECOVERY
+#define WASM_RT_SKIP_SIGNAL_RECOVERY 0
+#endif
+
+#if WASM_RT_MEMCHECK_GUARD_PAGES && !WASM_RT_SKIP_SIGNAL_RECOVERY
+#define WASM_RT_INSTALL_SIGNAL_HANDLER 1
+#else
+#define WASM_RT_INSTALL_SIGNAL_HANDLER 0
+#endif
+
+#ifndef WASM_RT_ALLOW_SEGUE
+#define WASM_RT_ALLOW_SEGUE 0
+#endif
+
+#ifndef WASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION
+#define WASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION 0
+#endif
+
+#if !defined(WASM_RT_STACK_DEPTH_COUNT) &&        \
+    !defined(WASM_RT_STACK_EXHAUSTION_HANDLER) && \
+    !WASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION
+
+#if WASM_RT_INSTALL_SIGNAL_HANDLER && !defined(_WIN32)
+#define WASM_RT_STACK_EXHAUSTION_HANDLER 1
+#else
+#define WASM_RT_STACK_DEPTH_COUNT 1
+#endif
+
+#endif
+
+#ifndef WASM_RT_STACK_DEPTH_COUNT
+#define WASM_RT_STACK_DEPTH_COUNT 0
+#endif
+#ifndef WASM_RT_STACK_EXHAUSTION_HANDLER
+#define WASM_RT_STACK_EXHAUSTION_HANDLER 0
+#endif
+
+#if WASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION
+
+#if (WASM_RT_STACK_EXHAUSTION_HANDLER + WASM_RT_STACK_DEPTH_COUNT) != 0
+#error \
+    "Cannot specify WASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION along with WASM_RT_STACK_EXHAUSTION_HANDLER or WASM_RT_STACK_DEPTH_COUNT"
+#endif
+
+#else
+
+#if (WASM_RT_STACK_EXHAUSTION_HANDLER + WASM_RT_STACK_DEPTH_COUNT) > 1
+#error \
+    "Cannot specify multiple options from WASM_RT_STACK_EXHAUSTION_HANDLER , WASM_RT_STACK_DEPTH_COUNT"
+#elif (WASM_RT_STACK_EXHAUSTION_HANDLER + WASM_RT_STACK_DEPTH_COUNT) == 0
+#error \
+    "Must specify one of WASM_RT_STACK_EXHAUSTION_HANDLER , WASM_RT_STACK_DEPTH_COUNT"
+#endif
+
+#endif
+
+#if WASM_RT_STACK_EXHAUSTION_HANDLER && !WASM_RT_INSTALL_SIGNAL_HANDLER
+#error \
+    "WASM_RT_STACK_EXHAUSTION_HANDLER  can only be used if WASM_RT_INSTALL_SIGNAL_HANDLER is enabled"
+#endif
+
+#if WASM_RT_STACK_DEPTH_COUNT
+
+#ifndef WASM_RT_MAX_CALL_STACK_DEPTH
+#define WASM_RT_MAX_CALL_STACK_DEPTH 500
+#endif
+
+extern WASM_RT_THREAD_LOCAL uint32_t wasm_rt_call_stack_depth;
+
+#endif
+
+#if defined(_MSC_VER)
+#define WASM_RT_NO_RETURN __declspec(noreturn)
+#else
+#define WASM_RT_NO_RETURN __attribute__((noreturn))
+#endif
+
+#if defined(__APPLE__) && WASM_RT_STACK_EXHAUSTION_HANDLER
+#define WASM_RT_MERGED_OOB_AND_EXHAUSTION_TRAPS 1
+#else
+#define WASM_RT_MERGED_OOB_AND_EXHAUSTION_TRAPS 0
+#endif
+
+typedef enum {
+  WASM_RT_TRAP_NONE,
+  WASM_RT_TRAP_OOB,
+  WASM_RT_TRAP_INT_OVERFLOW,
+  WASM_RT_TRAP_DIV_BY_ZERO,
+  WASM_RT_TRAP_INVALID_CONVERSION,
+  WASM_RT_TRAP_UNREACHABLE,
+  WASM_RT_TRAP_CALL_INDIRECT,
+  WASM_RT_TRAP_UNCAUGHT_EXCEPTION,
+  WASM_RT_TRAP_UNALIGNED,
+#if WASM_RT_MERGED_OOB_AND_EXHAUSTION_TRAPS
+  WASM_RT_TRAP_EXHAUSTION = WASM_RT_TRAP_OOB,
+#else
+  WASM_RT_TRAP_EXHAUSTION,
+#endif
+} wasm_rt_trap_t;
+
+typedef enum {
+  WASM_RT_I32,
+  WASM_RT_I64,
+  WASM_RT_F32,
+  WASM_RT_F64,
+  WASM_RT_V128,
+  WASM_RT_FUNCREF,
+  WASM_RT_EXTERNREF,
+} wasm_rt_type_t;
+
+typedef void (*wasm_rt_function_ptr_t)(void);
+
+typedef struct wasm_rt_tailcallee_t {
+  void (*fn)(void** instance_ptr,
+             void* tail_call_stack,
+             struct wasm_rt_tailcallee_t* next);
+} wasm_rt_tailcallee_t;
+
+typedef const char* wasm_rt_func_type_t;
+
+typedef struct {
+
+  wasm_rt_func_type_t func_type;
+
+  wasm_rt_function_ptr_t func;
+
+  wasm_rt_tailcallee_t func_tailcallee;
+
+  void* module_instance;
+} wasm_rt_funcref_t;
+
+#define wasm_rt_funcref_null_value \
+  ((wasm_rt_funcref_t){NULL, NULL, {NULL}, NULL})
+
+typedef void* wasm_rt_externref_t;
+
+#define wasm_rt_externref_null_value ((wasm_rt_externref_t){NULL})
+
+typedef struct {
+
+  uint8_t* data;
+
+  uint64_t pages;
+
+  uint64_t max_pages;
+
+  uint64_t size;
+
+  bool is64;
+} wasm_rt_memory_t;
+
+#ifdef WASM_RT_C11_AVAILABLE
+
+typedef struct {
+
+  _Atomic volatile uint8_t* data;
+
+  uint64_t pages;
+
+  uint64_t max_pages;
+
+  uint64_t size;
+
+  bool is64;
+
+  WASM_RT_MUTEX mem_lock;
+} wasm_rt_shared_memory_t;
+#endif
+
+typedef struct {
+
+  wasm_rt_funcref_t* data;
+
+  uint32_t max_size;
+
+  uint32_t size;
+} wasm_rt_funcref_table_t;
+
+typedef struct {
+
+  wasm_rt_externref_t* data;
+
+  uint32_t max_size;
+
+  uint32_t size;
+} wasm_rt_externref_table_t;
+
+void wasm_rt_init(void);
+
+bool wasm_rt_is_initialized(void);
+
+void wasm_rt_free(void);
+
+void wasm_rt_init_thread(void);
+
+void wasm_rt_free_thread(void);
+
+typedef struct {
+
+  bool initialized;
+
+  jmp_buf buffer;
+} wasm_rt_jmp_buf;
+
+#ifndef _WIN32
+#define WASM_RT_SETJMP_SETBUF(buf) sigsetjmp(buf, 1)
+#else
+#define WASM_RT_SETJMP_SETBUF(buf) setjmp(buf)
+#endif
+
+#define WASM_RT_SETJMP(buf) \
+  ((buf).initialized = true, WASM_RT_SETJMP_SETBUF((buf).buffer))
+
+#ifndef _WIN32
+#define WASM_RT_LONGJMP_UNCHECKED(buf, val) siglongjmp(buf, val)
+#else
+#define WASM_RT_LONGJMP_UNCHECKED(buf, val) longjmp(buf, val)
+#endif
+
+#define WASM_RT_LONGJMP(buf, val)                                   \
+    \
+  if (!((buf).initialized))                                         \
+    abort();                                                        \
+  (buf).initialized = false;                                        \
+  WASM_RT_LONGJMP_UNCHECKED((buf).buffer, val)
+
+WASM_RT_NO_RETURN void wasm_rt_trap(wasm_rt_trap_t);
+
+const char* wasm_rt_strerror(wasm_rt_trap_t trap);
+
+#define wasm_rt_try(target) WASM_RT_SETJMP(target)
+
+void wasm_rt_allocate_memory(wasm_rt_memory_t*,
+                             uint64_t initial_pages,
+                             uint64_t max_pages,
+                             bool is64);
+
+uint64_t wasm_rt_grow_memory(wasm_rt_memory_t*, uint64_t pages);
+
+void wasm_rt_free_memory(wasm_rt_memory_t*);
+
+#ifdef WASM_RT_C11_AVAILABLE
+
+void wasm_rt_allocate_memory_shared(wasm_rt_shared_memory_t*,
+                                    uint64_t initial_pages,
+                                    uint64_t max_pages,
+                                    bool is64);
+
+uint64_t wasm_rt_grow_memory_shared(wasm_rt_shared_memory_t*, uint64_t pages);
+
+void wasm_rt_free_memory_shared(wasm_rt_shared_memory_t*);
+#endif
+
+void wasm_rt_allocate_funcref_table(wasm_rt_funcref_table_t*,
+                                    uint32_t elements,
+                                    uint32_t max_elements);
+
+void wasm_rt_free_funcref_table(wasm_rt_funcref_table_t*);
+
+void wasm_rt_allocate_externref_table(wasm_rt_externref_table_t*,
+                                      uint32_t elements,
+                                      uint32_t max_elements);
+
+void wasm_rt_free_externref_table(wasm_rt_externref_table_t*);
+
+uint32_t wasm_rt_grow_funcref_table(wasm_rt_funcref_table_t*,
+                                    uint32_t delta,
+                                    wasm_rt_funcref_t init);
+uint32_t wasm_rt_grow_externref_table(wasm_rt_externref_table_t*,
+                                      uint32_t delta,
+                                      wasm_rt_externref_t init);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
