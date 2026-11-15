@@ -415,6 +415,8 @@ static CGPoint to_game(CGPoint p);
       return;
     }
     double dist = _visible ? hypot(p.x - _pos.x, p.y - _pos.y) : DBL_MAX;
+    host_log("mouse: tap %.0f,%.0f, crosshair %.0f,%.0f, dist %.0f (radius %.0f) -> %s", p.x, p.y, _pos.x, _pos.y,
+             _visible ? dist : -1.0, radius, dist < radius ? "click" : "move");
     if (dist < radius) {
       _pending = YES;
       _multiRight = NO;
