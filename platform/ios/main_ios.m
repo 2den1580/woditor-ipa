@@ -311,6 +311,7 @@ static void* engine_thread(void* arg) {
 @property(nonatomic) BOOL visible;
 - (void)touches:(NSSet<UITouch*>*)all phase:(int)phase changed:(NSSet<UITouch*>*)changed;
 - (void)reloadConfig;
+- (void)resetGesture;
 @end
 
 static CGPoint to_game(CGPoint p);
@@ -379,6 +380,12 @@ static CGPoint to_game(CGPoint p);
   _autoClick = nil;
 }
 
+- (void)resetGesture {
+  [self stopTimers];
+  if (_multiRight || _holding) [self send:6 at:_pos right:_multiRight];
+  _pending = _multiRight = _holding = NO;
+}
+
 - (void)moveTo:(CGPoint)p {
   _pos = p;
   _visible = YES;
@@ -396,7 +403,8 @@ static CGPoint to_game(CGPoint p);
     return;
   }
   NSInteger count = all.count;
-  CGFloat radius = 10;
+
+  CGFloat radius = fmax(24, _size);
   if (phase == 0) {
     if (count >= 2) {
       [self stopTimers];
@@ -680,7 +688,14 @@ static NSString* tr(NSString* ru, NSString* en) { return is_ru() ? ru : en; }
   send_key(down, dom_from_android(key));
 }
 
+- (void)pruneTouches {
+  for (UITouch* x in [_gameTouches copy])
+    if (x.phase == UITouchPhaseEnded || x.phase == UITouchPhaseCancelled || !x.window) [_gameTouches removeObject:x];
+}
+
 - (void)touchesBegan:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {
+  [self pruneTouches];
+  if (!_gameTouches.count) [_mouse resetGesture];
   [_gameTouches unionSet:t];
   [_mouse touches:_gameTouches phase:0 changed:t];
 }
@@ -688,6 +703,7 @@ static NSString* tr(NSString* ru, NSString* en) { return is_ru() ? ru : en; }
 - (void)touchesEnded:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e {
   [_mouse touches:_gameTouches phase:2 changed:t];
   [_gameTouches minusSet:t];
+  [self pruneTouches];
 }
 - (void)touchesCancelled:(NSSet<UITouch*>*)t withEvent:(UIEvent*)e { [self touchesEnded:t withEvent:e]; }
 
